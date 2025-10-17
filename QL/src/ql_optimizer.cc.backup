@@ -1,0 +1,451 @@
+#include "../internal/ql_internal.h"
+#include "../include/ql.h"
+#include <iostream>
+#include <algorithm>
+#include <set>
+#include <map>
+
+using namespace std;
+
+//
+// QueryOptimizer 实现
+//
+QueryOptimizer::QueryOptimizer(SM_Manager *sm, IX_Manager *ix, RM_Manager *rm)
+    : smManager(sm), ixManager(ix), rmManager(rm) {
+    // 初始化优化器
+}
+
+QueryOptimizer::~QueryOptimizer() {
+    // 清理资源
+}
+
+//
+// 优化查询
+//
+unique_ptr<PlanNode> QueryOptimizer::OptimizeQuery(const QueryContext &context) {
+    // 1. 构建初始查询计划
+    auto plan = BuildInitialPlan(context);
+    
+    // 2. 应用优化规则
+    plan = ApplyOptimizations(std::move(plan), context);
+    
+    // 3. 选择最佳访问路径
+    plan = SelectAccessPaths(std::move(plan), context);
+    
+    return plan;
+}
+
+//
+// 构建初始查询计划
+//
+unique_ptr<PlanNode> QueryOptimizer::BuildInitialPlan(const QueryContext &context) {
+    // 1. 为每个关系创建扫描节点
+    vector<unique_ptr<PlanNode>> scanNodes;
+    
+    for (const string &relation : context.relations) {
+        auto scanNode = make_unique<ScanNode>(relation, smManager, rmManager);
+        scanNodes.push_back(std::move(scanNode));
+    }
+    
+    // 2. 应用选择条件
+    auto planWithSelections = ApplySelections(std::move(scanNodes), context.conditions);
+    
+    // 3. 执行连接
+    auto planWithJoins = ApplyJoins(std::move(planWithSelections), context.conditions);
+    
+    // 4. 应用投影
+    auto finalPlan = ApplyProjection(std::move(planWithJoins), context.selectAttrs);
+    
+    return finalPlan;
+}
+
+//
+// 应用选择条件
+//
+vector<unique_ptr<PlanNode>> QueryOptimizer::ApplySelections(
+    vector<unique_ptr<PlanNode>> scanNodes,
+    const vector<Condition> &conditions) {
+    
+    vector<unique_ptr<PlanNode>> result;
+    
+    for (auto &scanNode : scanNodes) {
+        unique_ptr<PlanNode> currentNode = std::move(scanNode);
+        
+        // 找到应用于当前关系的选择条件
+        for (const Condition &cond : conditions) {
+            if (IsSelectionCondition(cond, currentNode.get())) {
+                auto selectNode = make_unique<SelectNode>(std::move(currentNode), cond);
+                currentNode = std::move(selectNode);
+            }
+        }
+        
+        result.push_back(std::move(currentNode));
+    }
+    
+    return result;
+}
+
+//
+// 检查是否是选择条件
+//
+bool QueryOptimizer::IsSelectionCondition(const Condition &cond, const PlanNode *node) {
+    // 检查条件是否只涉及一个关系（选择条件）
+    // 而不是连接条件（涉及多个关系）
+    
+    if (!cond.bRhsIsAttr) {
+        // 右操作数是常量，这是一个选择条件
+        return true;
+    }
+    
+    // 检查左右属性是否来自同一个关系
+    string lhsRel = GetRelationName(cond.lhsAttr, node);
+    string rhsRel = GetRelationName(cond.rhsAttr, node);
+    
+    return lhsRel == rhsRel;
+}
+
+//
+// 获取属性所属的关系名
+//
+string QueryOptimizer::GetRelationName(const RelAttr &attr, const PlanNode *node) {
+    if (attr.relName) {
+        return string(attr.relName);
+    }
+    
+    // 如果没有指定关系名，需要从节点的输出属性中推断
+    // 这里简化实现，假设扫描节点只有一个关系
+    if (auto scanNode = dynamic_cast<const ScanNode*>(node)) {
+        return scanNode->relation;
+    }
+    
+    return "";
+}
+
+//
+// 应用连接
+//
+unique_ptr<PlanNode> QueryOptimizer::ApplyJoins(
+    vector<unique_ptr<PlanNode>> nodes,
+    const vector<Condition> &conditions) {
+    
+    if (nodes.size() == 1) {
+        return std::move(nodes[0]);
+    }
+    
+    // 找到连接条件
+    vector<Condition> joinConditions;
+    for (const Condition &cond : conditions) {
+        if (IsJoinCondition(cond, nodes)) {
+            joinConditions.push_back(cond);
+        }
+    }
+    
+    // 使用贪心算法构建连接顺序
+    unique_ptr<PlanNode> result = std::move(nodes[0]);
+    
+    for (int i = 1; i < nodes.size(); i++) {
+        // 找到最佳的连接条件
+        Condition bestJoinCond;
+        bool foundJoin = false;
+        
+        for (const Condition &cond : joinConditions) {
+            if (CanJoinWith(cond, result.get(), nodes[i].get())) {
+                bestJoinCond = cond;
+                foundJoin = true;
+                break;
+            }
+        }
+        
+        if (foundJoin) {
+            // 使用连接条件创建连接节点
+            auto joinNode = make_unique<JoinNode>(std::move(result), std::move(nodes[i]), bestJoinCond);
+            result = std::move(joinNode);
+        } else {
+            // 笛卡尔积连接（没有连接条件）
+            Condition cartesianCond;
+            // 创建一个始终为真的条件
+            cartesianCond.op = EQ_OP;
+            cartesianCond.bRhsIsAttr = false;
+            cartesianCond.rhsValue.type = INT;
+            int one = 1;
+            cartesianCond.rhsValue.data = &one;
+            
+            auto joinNode = make_unique<JoinNode>(std::move(result), std::move(nodes[i]), cartesianCond);
+            result = std::move(joinNode);
+        }
+    }
+    
+    return result;
+}
+
+//
+// 检查是否是连接条件
+//
+bool QueryOptimizer::IsJoinCondition(const Condition &cond, 
+                                    const vector<unique_ptr<PlanNode>> &nodes) {
+    if (!cond.bRhsIsAttr) {
+        return false; // 右操作数是常量，不是连接条件
+    }
+    
+    // 检查左右属性是否来自不同的关系
+    string lhsRel = "";
+    string rhsRel = "";
+    
+    if (cond.lhsAttr.relName) lhsRel = cond.lhsAttr.relName;
+    if (cond.rhsAttr.relName) rhsRel = cond.rhsAttr.relName;
+    
+    return !lhsRel.empty() && !rhsRel.empty() && lhsRel != rhsRel;
+}
+
+//
+// 检查是否可以连接
+//
+bool QueryOptimizer::CanJoinWith(const Condition &cond, 
+                                const PlanNode *left, const PlanNode *right) {
+    // 检查连接条件的左右属性是否分别来自左右子树
+    // 这里简化实现
+    return true;
+}
+
+//
+// 应用投影
+//
+unique_ptr<PlanNode> QueryOptimizer::ApplyProjection(
+    unique_ptr<PlanNode> plan,
+    const vector<RelAttr> &selectAttrs) {
+    
+    if (selectAttrs.empty()) {
+        return plan; // 没有指定投影属性，返回所有属性
+    }
+    
+    // 检查是否需要投影（是否选择了所有属性）
+    bool needProjection = false;
+    
+    for (const RelAttr &attr : selectAttrs) {
+        if (attr.attrName && strcmp(attr.attrName, "*") == 0) {
+            needProjection = false;
+            break; // "*" 表示选择所有属性
+        } else {
+            needProjection = true;
+        }
+    }
+    
+    if (needProjection) {
+        auto projectNode = make_unique<ProjectNode>(std::move(plan), selectAttrs);
+        return std::move(projectNode);
+    }
+    
+    return plan;
+}
+
+//
+// 应用优化规则
+//
+unique_ptr<PlanNode> QueryOptimizer::ApplyOptimizations(
+    unique_ptr<PlanNode> plan,
+    const QueryContext &context) {
+    
+    // 1. 谓词下推
+    plan = PushDownSelections(std::move(plan));
+    
+    // 2. 投影下推
+    plan = PushDownProjections(std::move(plan));
+    
+    // 3. 连接重排序
+    plan = ReorderJoins(std::move(plan), context);
+    
+    return plan;
+}
+
+//
+// 谓词下推优化
+//
+unique_ptr<PlanNode> QueryOptimizer::PushDownSelections(unique_ptr<PlanNode> plan) {
+    // 将选择条件尽可能推到计划树的底部
+    // 这里实现基本的下推逻辑
+    return plan;
+}
+
+//
+// 投影下推优化
+//
+unique_ptr<PlanNode> QueryOptimizer::PushDownProjections(unique_ptr<PlanNode> plan) {
+    // 将投影操作尽可能推到计划树的底部，减少中间结果的大小
+    return plan;
+}
+
+//
+// 连接重排序优化
+//
+unique_ptr<PlanNode> QueryOptimizer::ReorderJoins(
+    unique_ptr<PlanNode> plan,
+    const QueryContext &context) {
+    
+    // 使用启发式规则重排序连接
+    // 例如：选择性高的连接优先，小关系作为内表等
+    return plan;
+}
+
+//
+// 选择最佳访问路径
+//
+unique_ptr<PlanNode> QueryOptimizer::SelectAccessPaths(
+    unique_ptr<PlanNode> plan,
+    const QueryContext &context) {
+    
+    // 为每个扫描节点选择最佳的访问路径
+    // 考虑是否使用索引扫描而不是全表扫描
+    
+    return SelectAccessPathsRecursive(std::move(plan), context);
+}
+
+//
+// 递归选择访问路径
+//
+unique_ptr<PlanNode> QueryOptimizer::SelectAccessPathsRecursive(
+    unique_ptr<PlanNode> plan,
+    const QueryContext &context) {
+    
+    if (!plan) {
+        return plan;
+    }
+    
+    // 检查是否是扫描节点
+    if (auto scanNode = dynamic_cast<ScanNode*>(plan.get())) {
+        // 考虑是否有索引可以使用
+        auto indexScan = ConsiderIndexScan(scanNode, context);
+        if (indexScan) {
+            return indexScan;
+        }
+    }
+    
+    // 处理其他类型的节点
+    if (auto selectNode = dynamic_cast<SelectNode*>(plan.get())) {
+        // 递归处理子节点
+        // 注意：这里需要小心处理unique_ptr的所有权转移
+    }
+    
+    // 其他节点类型的处理...
+    
+    return plan;
+}
+
+//
+// 考虑索引扫描
+//
+unique_ptr<PlanNode> QueryOptimizer::ConsiderIndexScan(
+    ScanNode *scanNode,
+    const QueryContext &context) {
+    
+    // 检查是否有合适的索引可以用于选择条件
+    for (const Condition &cond : context.conditions) {
+        if (HasIndexForCondition(scanNode->relation, cond)) {
+            // 创建索引扫描节点
+            // 这里需要实现IndexScanNode类
+            // return make_unique<IndexScanNode>(...);
+        }
+    }
+    
+    return nullptr; // 没有找到合适的索引
+}
+
+//
+// 检查是否有索引用于条件
+//
+bool QueryOptimizer::HasIndexForCondition(const string &relation, const Condition &cond) {
+    // 检查关系的指定属性是否有索引
+    // 需要查询系统目录
+    
+    if (cond.bRhsIsAttr) {
+        return false; // 连接条件暂不考虑索引
+    }
+    
+    // 检查左属性是否有索引
+    if (cond.lhsAttr.attrName) {
+        // 这里需要访问SM模块查询索引信息
+        // 临时返回false
+        return false;
+    }
+    
+    return false;
+}
+
+//
+// 估算关系大小
+//
+int QueryOptimizer::EstimateRelationSize(const string &relation) {
+    // 估算关系的元组数量
+    // 这里可以查询系统统计信息
+    return 1000; // 临时返回固定值
+}
+
+//
+// 估算选择性
+//
+double QueryOptimizer::EstimateSelectivity(const Condition &cond) {
+    // 估算选择条件的选择性（0到1之间）
+    switch (cond.op) {
+        case EQ_OP: return 0.1;  // 等值条件选择性较低
+        case LT_OP:
+        case GT_OP: return 0.3;  // 范围条件选择性中等
+        case LE_OP:
+        case GE_OP: return 0.4;
+        case NE_OP: return 0.9;  // 不等条件选择性较高
+        default: return 0.5;     // 默认选择性
+    }
+}
+
+//
+// 估算连接代价
+//
+double QueryOptimizer::EstimateJoinCost(const PlanNode *left, 
+                                       const PlanNode *right,
+                                       const Condition &joinCond) {
+    // 估算连接操作的代价
+    // 这里使用简单的嵌套循环连接代价模型
+    
+    int leftSize = EstimateNodeSize(left);
+    int rightSize = EstimateNodeSize(right);
+    
+    // 嵌套循环连接代价 = 外表大小 + 外表大小 * 内表大小
+    return leftSize + leftSize * rightSize;
+}
+
+//
+// 估算节点大小
+//
+int QueryOptimizer::EstimateNodeSize(const PlanNode *node) {
+    // 估算计划节点的输出大小
+    if (auto scanNode = dynamic_cast<const ScanNode*>(node)) {
+        return EstimateRelationSize(scanNode->relation);
+    }
+    
+    // 其他节点类型的处理...
+    return 1000; // 临时返回固定值
+}
+
+//
+// 工具函数：打印查询上下文
+//
+void QueryOptimizer::PrintQueryContext(const QueryContext &context) {
+    cout << "Query Context:" << endl;
+    
+    cout << "  Relations: ";
+    for (int i = 0; i < context.relations.size(); i++) {
+        if (i > 0) cout << ", ";
+        cout << context.relations[i];
+    }
+    cout << endl;
+    
+    cout << "  Select Attributes: ";
+    for (int i = 0; i < context.selectAttrs.size(); i++) {
+        if (i > 0) cout << ", ";
+        if (context.selectAttrs[i].relName) {
+            cout << context.selectAttrs[i].relName << ".";
+        }
+        cout << context.selectAttrs[i].attrName;
+    }
+    cout << endl;
+    
+    cout << "  Conditions: " << context.conditions.size() << " conditions" << endl;
+}

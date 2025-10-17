@@ -1,0 +1,102 @@
+//
+// sql_parser_unified.h - 统一的SQL和系统命令解析器头文件
+//
+
+#ifndef SQL_PARSER_UNIFIED_H
+#define SQL_PARSER_UNIFIED_H
+
+#include <string>
+#include <vector>
+#include <map>
+#include "../../RM/include/redbase.h"
+
+// 前向声明
+struct Value;
+struct Condition;
+
+// 扩展的命令类型
+enum SQLType {
+    SQL_CREATE_TABLE,
+    SQL_DROP_TABLE,
+    SQL_INSERT,
+    SQL_SELECT,
+    SQL_DELETE,
+    SQL_UPDATE,
+    SQL_CREATE_INDEX,
+    SQL_DROP_INDEX,
+    // 系统命令
+    SQL_USE_DATABASE,
+    SQL_CREATE_DATABASE,
+    SQL_SHOW_TABLES,
+    SQL_DESC_TABLE,
+    // 特殊命令
+    SQL_HELP,
+    SQL_QUIT,
+    SQL_UNKNOWN
+};
+
+// SQL解析结果
+struct ParsedSQL {
+    SQLType type;
+    std::string tableName;      // 表名
+    std::string databaseName;   // 数据库名
+    std::vector<std::string> columnNames;
+    std::vector<AttrType> columnTypes;
+    std::vector<int> columnLengths;
+    std::vector<Value> values;
+    std::vector<Condition> conditions;
+    std::string indexName;
+    
+    ParsedSQL() : type(SQL_UNKNOWN) {}
+};
+
+class SQLParser {
+public:
+    SQLParser();
+    ~SQLParser();
+    
+    // 统一解析接口 - 处理所有命令（SQL + 系统命令）
+    ParsedSQL ParseCommand(const std::string &command);
+    
+private:
+    // 辅助函数
+    std::vector<std::string> Tokenize(const std::string &command);
+    SQLType GetCommandType(const std::vector<std::string> &tokens);
+    
+    // SQL语句解析
+    ParsedSQL ParseCreateTable(const std::vector<std::string> &tokens);
+    ParsedSQL ParseDropTable(const std::vector<std::string> &tokens);
+    ParsedSQL ParseInsert(const std::vector<std::string> &tokens);
+    ParsedSQL ParseSelect(const std::vector<std::string> &tokens);
+    ParsedSQL ParseDelete(const std::vector<std::string> &tokens);
+    ParsedSQL ParseUpdate(const std::vector<std::string> &tokens);
+    ParsedSQL ParseCreateIndex(const std::vector<std::string> &tokens);
+    ParsedSQL ParseDropIndex(const std::vector<std::string> &tokens);
+    
+    // 系统命令解析
+    ParsedSQL ParseUseDatabase(const std::vector<std::string> &tokens);
+    ParsedSQL ParseCreateDatabase(const std::vector<std::string> &tokens);
+    ParsedSQL ParseShowTables(const std::vector<std::string> &tokens);
+    ParsedSQL ParseDescTable(const std::vector<std::string> &tokens);
+    ParsedSQL ParseHelp(const std::vector<std::string> &tokens);
+    ParsedSQL ParseQuit(const std::vector<std::string> &tokens);
+    
+    // 工具函数
+    AttrType StringToAttrType(const std::string &typeStr);
+    Value StringToValue(const std::string &valueStr, AttrType type);
+    CompOp StringToCompOp(const std::string &opStr);
+    std::string ToUpper(const std::string &str);
+    void RemoveCommas(std::vector<std::string> &tokens);
+    void RemoveParentheses(std::vector<std::string> &tokens);
+};
+
+#endif // SQL_PARSER_UNIFIED_H
+// 排序子句
+struct OrderByClause {
+    std::string columnName;
+    bool isDescending;  // true 表示 DESC, false 表示 ASC
+};
+
+// 注意: ParsedSQL 需要扩展以支持以下字段
+// std::vector<OrderByClause> orderByClauses;
+// std::vector<std::string> tableAliases;

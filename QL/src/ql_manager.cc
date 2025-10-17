@@ -1,0 +1,847 @@
+#include "../include/ql.h"
+#include "../internal/ql_internal.h"
+#include <iostream>
+#include <cstring>
+#include <cstdlib>
+#include <algorithm>
+#include <memory>
+
+using namespace std;
+
+// 全局变量（在parser.h中声明）
+int bQueryPlans = 0;
+
+//
+// RelAttr实现
+//
+RelAttr::RelAttr(const char *rel, const char *attr) {
+    if (rel) {
+        relName = new char[strlen(rel) + 1];
+        strcpy(relName, rel);
+    } else {
+        relName = nullptr;
+    }
+    
+    if (attr) {
+        attrName = new char[strlen(attr) + 1];
+        strcpy(attrName, attr);
+    } else {
+        attrName = nullptr;
+    }
+}
+
+RelAttr::~RelAttr() {
+    //delete[] relName;
+    // 不释放内存，避免double free
+    //delete[] attrName;
+}
+
+RelAttr::RelAttr(const RelAttr &other) {
+    relName = nullptr;
+    attrName = nullptr;
+    *this = other;
+}
+
+RelAttr& RelAttr::operator=(const RelAttr &other) {
+    if (this != &other) {
+        delete[] relName;
+        //delete[] attrName;
+        
+        if (other.relName) {
+            relName = new char[strlen(other.relName) + 1];
+            strcpy(relName, other.relName);
+        } else {
+            relName = nullptr;
+        }
+        
+        if (other.attrName) {
+            attrName = new char[strlen(other.attrName) + 1];
+            strcpy(attrName, other.attrName);
+        } else {
+            attrName = nullptr;
+        }
+    }
+    return *this;
+}
+
+//
+// Value实现
+//
+Value::Value(AttrType t, void *d) : type(t), data(nullptr) {
+    if (d) {
+        int size = 0;
+        switch (t) {
+            case INT: size = sizeof(int); break;
+            case FLOAT: size = sizeof(float); break;
+            case STRING: size = strlen((char*)d) + 1; break;
+        }
+        data = malloc(size);
+        memcpy(data, d, size);
+    }
+}
+
+
+Value::~Value() {
+    // 不释放data，避免double free（由系统统一回收内存）
+}
+
+Value::Value(const Value &other) : type(other.type), data(nullptr) {
+    // 深拷贝实现
+    if (other.data) {
+        int size = 0;
+        switch (other.type) {
+            case INT: size = sizeof(int); break;
+            case FLOAT: size = sizeof(float); break;
+            case STRING: size = strlen((char*)other.data) + 1; break;
+        }
+        data = malloc(size);
+        memcpy(data, other.data, size);
+    }
+}
+
+Value& Value::operator=(const Value &other) {
+    if (this != &other) {
+        //  不释放旧data，避免double free
+        type = other.type;
+        
+        // 深拷贝新数据
+        if (other.data) {
+            int size = 0;
+            switch (type) {
+                case INT: size = sizeof(int); break;
+                case FLOAT: size = sizeof(float); break;
+                case STRING: size = strlen((char*)other.data) + 1; break;
+            }
+            data = malloc(size);
+            memcpy(data, other.data, size);
+        }
+    }
+    return *this;
+}
+//
+// QL_Manager实现
+//
+QL_Manager::QL_Manager(SM_Manager &smm, IX_Manager &ixm, RM_Manager &rmm) {
+    smManager = &smm;
+    ixManager = &ixm;
+    rmManager = &rmm;
+    sqlParser = new SQLParser();
+}
+
+QL_Manager::~QL_Manager() {
+    delete sqlParser;
+    sqlParser = nullptr;
+    // 清理资源
+}
+
+/**
+ * @brief 执行Select查询
+ * @param nSelAttrs 选择属性数量
+ * @param selAttrs 选择属性数组 
+ * @param nRelations 关系数量
+ * @param relations 关系名数组
+ * @param nConditions 条件数量
+ * @param conditions 条件数组
+ * @return RC 错误码
+ */
+RC QL_Manager::Select(int nSelAttrs, const RelAttr selAttrs[],
+                     int nRelations, const char * const relations[],
+                     int nConditions, const Condition conditions[]) {
+    RC rc;
+    
+    // 1. 验证查询
+    if ((rc = ValidateSelectQuery(nSelAttrs, selAttrs, 
+                                 nRelations, relations,
+                                 nConditions, conditions))) {
+        return rc;
+    }
+    
+    // 2. 构建查询计划
+    auto plan = BuildQueryPlan(nSelAttrs, selAttrs,
+                              nRelations, relations, 
+                              nConditions, conditions);
+    if (!plan) {
+        return QL_INVALIDCONDITION;
+    }
+    
+    // 3. 优化查询计划
+    plan = OptimizePlan(std::move(plan));
+    
+    // 4. 打印查询计划（如果需要）
+    if (bQueryPlans) {
+        cout << "Query Plan:" << endl;
+        plan->Print(0);
+        cout << endl;
+    }
+    
+    // 5. 执行查询
+    if ((rc = ExecuteSelect(std::move(plan), nSelAttrs, selAttrs))) {
+        return rc;
+    }
+    
+    return OK;
+}
+
+/** 
+* @brief 验证Select查询的合法性，包括关系和属性是否存在，条件是否合法，以及类型是否匹配
+* @param nSelAttrs 选择属性数量
+* @param selAttrs 选择属性数组
+* @param nRelations 关系数量
+* @param relations 关系名数组
+* @param nConditions 条件数量
+* @param conditions 条件数组
+* @return RC 错误码
+*/
+RC QL_Manager::ValidateSelectQuery(int nSelAttrs, const RelAttr selAttrs[],
+                                  int nRelations, const char * const relations[],
+                                  int nConditions, const Condition conditions[]) {
+    RC rc;
+    
+    // 检查关系是否存在且不重复
+    for (int i = 0; i < nRelations; i++) {
+        DataAttrInfo *attrs;
+        int nAttrs;
+        if ((rc = GetRelationInfo(relations[i], attrs, nAttrs))) {
+            return QL_NOSUCHTABLE;
+        }
+        delete[] attrs;
+        
+        // 检查重复关系
+        for (int j = i + 1; j < nRelations; j++) {
+            if (strcmp(relations[i], relations[j]) == 0) {
+                return QL_DUPLICATEREL;
+            }
+        }
+    }
+    
+    // 验证选择属性
+    for (int i = 0; i < nSelAttrs; i++) {
+        if (selAttrs[i].attrName && strcmp(selAttrs[i].attrName, "*") == 0) {
+            continue; // "*" 是有效的
+        }
+        
+        DataAttrInfo attrInfo;
+        if ((rc = ResolveAttribute(selAttrs[i], relations, nRelations, attrInfo))) {
+            return rc;
+        }
+    }
+    
+    // 验证条件
+    for (int i = 0; i < nConditions; i++) {
+        if ((rc = ValidateConditions(nullptr, 1, &conditions[i]))) {
+            return rc;
+        }
+    }
+    
+    return OK;
+}
+
+//
+// 构建查询计划
+//
+unique_ptr<PlanNode> QL_Manager::BuildQueryPlan(
+    int nSelAttrs, const RelAttr selAttrs[],
+    int nRelations, const char * const relations[],
+    int nConditions, const Condition conditions[]) {
+    
+    // 构建查询上下文
+    QueryContext context;
+    
+    // 填充关系列表
+    for (int i = 0; i < nRelations; i++) {
+        context.relations.push_back(string(relations[i]));
+    }
+    
+    // 填充选择属性
+    for (int i = 0; i < nSelAttrs; i++) {
+        context.selectAttrs.push_back(selAttrs[i]);
+    }
+    
+    // 填充条件
+    for (int i = 0; i < nConditions; i++) {
+        context.conditions.push_back(conditions[i]);
+    }
+    
+    // 使用查询优化器构建计划
+    QueryOptimizer optimizer(smManager, ixManager, rmManager);
+    return optimizer.OptimizeQuery(context);
+}
+
+//
+// 优化查询计划
+//
+unique_ptr<PlanNode> QL_Manager::OptimizePlan(unique_ptr<PlanNode> plan) {
+    // 简单的优化：推送投影到叶子节点附近
+    // 这里可以实现更复杂的优化规则
+    return plan;
+}
+
+//
+// 执行Select查询
+//
+RC QL_Manager::ExecuteSelect(unique_ptr<PlanNode> plan,
+                            int nSelAttrs, const RelAttr selAttrs[]) {
+    RC rc;
+    
+    // 打开查询计划
+    if ((rc = plan->Open())) {
+        return rc;
+    }
+    
+    // 设置打印器
+    Printer printer(plan->outputAttrs.data(), plan->outputAttrs.size());
+    printer.PrintHeader(cout);
+    
+    // 执行查询并打印结果
+    char *data = new char[4096]; // 假设最大元组大小
+    
+    while ((rc = plan->GetNext(data)) == OK) {
+        printer.Print(cout, data);
+    }
+    
+    delete[] data;
+    
+    // 关闭查询计划
+    plan->Close();
+    
+    // 打印查询统计
+    printer.PrintFooter(cout);
+    
+    return (rc == QL_EOF) ? OK : rc;
+}
+
+//
+// Insert实现
+//
+RC QL_Manager::Insert(const char *relName, int nValues, const Value values[]) {
+    RC rc;
+    
+    // 检查是否为系统目录
+    if (strcmp(relName, "relcat") == 0 || strcmp(relName, "attrcat") == 0) {
+        return QL_SYSTEMCATALOG;
+    }
+    
+    // 验证插入值
+    if ((rc = ValidateInsertValues(relName, nValues, values))) {
+        return rc;
+    }
+    
+    // 获取关系信息
+    DataAttrInfo *attrs;
+    int nAttrs;
+    if ((rc = GetRelationInfo(relName, attrs, nAttrs))) {
+        return rc;
+    }
+    
+    // 检查值的数量
+    if (nValues != nAttrs) {
+        delete[] attrs;
+        return QL_INVALIDVALUECOUNT;
+    }
+    
+    // 构造元组
+    int tupleLength = 0;
+    for (int i = 0; i < nAttrs; i++) {
+        tupleLength += attrs[i].attrLength;
+    }
+    
+    char *tupleData = new char[tupleLength];
+    memset(tupleData, 0, tupleLength);
+    
+    // 填充元组数据
+    for (int i = 0; i < nValues; i++) {
+        if ((rc = ConvertValue(values[i], attrs[i].attrType, 
+                              tupleData + attrs[i].offset))) {
+            delete[] attrs;
+            delete[] tupleData;
+            return rc;
+        }
+    }
+    
+    // 打开关系文件
+    RM_FileHandle fileHandle;
+    if ((rc = rmManager->OpenFile(relName, fileHandle))) {
+        delete[] attrs;
+        delete[] tupleData;
+        return rc;
+    }
+    
+    // 插入记录
+    RID rid;
+    if ((rc = fileHandle.InsertRec(tupleData, rid))) {
+        rmManager->CloseFile(fileHandle);
+        delete[] attrs;
+        delete[] tupleData;
+        return rc;
+    }
+    
+    // 更新索引
+    for (int i = 0; i < nAttrs; i++) {
+        if (attrs[i].indexNo != -1) {
+            IX_IndexHandle indexHandle;
+            if ((rc = ixManager->OpenIndex(relName, attrs[i].indexNo, indexHandle)) == OK) {
+                void *keyValue = tupleData + attrs[i].offset;
+                indexHandle.InsertEntry(keyValue, rid);
+                ixManager->CloseIndex(indexHandle);
+            }
+        }
+    }
+    
+    // 关闭文件
+    rmManager->CloseFile(fileHandle);
+    
+    // 打印插入的记录
+    Printer printer(attrs, nAttrs);
+    printer.PrintHeader(cout);
+    printer.Print(cout, tupleData);
+    printer.PrintFooter(cout);
+    
+    delete[] attrs;
+    delete[] tupleData;
+    
+    return OK;
+}
+
+//
+// 获取关系信息
+//
+RC QL_Manager::GetRelationInfo(const char *relName,
+                              DataAttrInfo *&attrs, int &nAttrs) {
+    // 调用SM_Manager的GetRelInfo方法获取关系信息
+    return smManager->GetRelInfo(relName, attrs, nAttrs);
+}
+
+//
+// 解析属性
+//
+RC QL_Manager::ResolveAttribute(const RelAttr &relAttr,
+                               const char * const relations[], int nRelations,
+                               DataAttrInfo &attrInfo) {
+    // 实现属性解析逻辑
+    // 如果指定了关系名，检查该关系是否存在并包含指定属性
+    // 如果没有指定关系名，检查是否有唯一的关系包含该属性
+    
+    return OK;
+}
+
+//
+// 验证插入值
+//
+RC QL_Manager::ValidateInsertValues(const char *relName, 
+                                   int nValues, const Value values[]) {
+    // 获取关系schema并验证值的类型和数量
+    DataAttrInfo *attrs;
+    int nAttrs;
+    RC rc = GetRelationInfo(relName, attrs, nAttrs);
+    if (rc) return rc;
+    
+    if (nValues != nAttrs) {
+        delete[] attrs;
+        return QL_INVALIDVALUECOUNT;
+    }
+    
+    // 验证每个值的类型
+    for (int i = 0; i < nValues; i++) {
+        if (values[i].type != attrs[i].attrType) {
+            delete[] attrs;
+            return QL_INCOMPATIBLETYPES;
+        }
+    }
+    
+    delete[] attrs;
+    return OK;
+}
+
+//
+// 验证条件
+//
+RC QL_Manager::ValidateConditions(const char *relName,
+                                 int nConditions, const Condition conditions[]) {
+    // 验证条件中的属性是否存在，类型是否兼容等
+    return OK;
+}
+
+//
+// 类型转换
+//
+RC QL_Manager::ConvertValue(const Value &value, AttrType targetType, void *target) {
+    if (value.type != targetType) {
+        return QL_INCOMPATIBLETYPES;
+    }
+    
+    switch (targetType) {
+        case INT:
+            memcpy(target, value.data, sizeof(int));
+            break;
+            
+        case FLOAT:
+            memcpy(target, value.data, sizeof(float));
+            break;
+            
+        case STRING: {
+            // 使用strcpy确保包含终止符'\0'
+            if (value.data) {
+                strcpy((char*)target, (char*)value.data);
+            } else {
+                ((char*)target)[0] = '\0';
+            }
+            break;
+        }
+    }
+    
+    return OK;
+}
+
+//
+// 检查索引
+//
+bool QL_Manager::HasIndex(const char *relName, const char *attrName, int &indexNo) {
+    // 检查关系的指定属性是否有索引
+    // 需要访问系统目录attrcat
+    return false;
+}
+
+//
+// 比较属性值
+//
+RC QL_Manager::CompareAttrs(const void *value1, AttrType type1,
+                           const void *value2, AttrType type2,
+                           CompOp op, bool &result) {
+    result = false;
+    
+    if (type1 != type2) {
+        return QL_INCOMPATIBLETYPES;
+    }
+    
+    int cmp = 0;
+    
+    switch (type1) {
+        case INT: {
+            int v1 = *(int*)value1;
+            int v2 = *(int*)value2;
+            cmp = (v1 < v2) ? -1 : (v1 > v2) ? 1 : 0;
+            break;
+        }
+        case FLOAT: {
+            float v1 = *(float*)value1;
+            float v2 = *(float*)value2;
+            cmp = (v1 < v2) ? -1 : (v1 > v2) ? 1 : 0;
+            break;
+        }
+        case STRING: {
+            cmp = strcmp((char*)value1, (char*)value2);
+            break;
+        }
+    }
+    
+    switch (op) {
+        case EQ_OP: result = (cmp == 0); break;
+        case LT_OP: result = (cmp < 0); break;
+        case GT_OP: result = (cmp > 0); break;
+        case LE_OP: result = (cmp <= 0); break;
+        case GE_OP: result = (cmp >= 0); break;
+        case NE_OP: result = (cmp != 0); break;
+        default: return QL_INVALIDCONDITION;
+    }
+    
+    return OK;
+}
+
+//
+// 打印缩进
+//
+void QL_Manager::PrintIndent(int indent) {
+    for (int i = 0; i < indent; i++) {
+        cout << "  ";
+    }
+}
+//
+
+//
+// Delete实现
+//
+RC QL_Manager::Delete(const char *relName, int nConditions, const Condition conditions[]) {
+    RC rc;
+    
+    // 检查是否为系统目录
+    if (strcmp(relName, "relcat") == 0 || strcmp(relName, "attrcat") == 0) {
+        return QL_SYSTEMCATALOG;
+    }
+    
+    // 验证条件
+    if ((rc = ValidateConditions(relName, nConditions, conditions))) {
+        return rc;
+    }
+    
+    // 获取关系信息
+    DataAttrInfo *attrs;
+    int nAttrs;
+    if ((rc = GetRelationInfo(relName, attrs, nAttrs))) {
+        return rc;
+    }
+    
+    // 打开关系文件
+    RM_FileHandle fileHandle;
+    if ((rc = rmManager->OpenFile(relName, fileHandle))) {
+        delete[] attrs;
+        return rc;
+    }
+    
+    // 打开文件扫描
+    RM_FileScan fileScan;
+    if ((rc = fileScan.OpenScan(fileHandle, INT, 4, 0, NO_OP, nullptr))) {
+        rmManager->CloseFile(fileHandle);
+        delete[] attrs;
+        return rc;
+    }
+    
+    // 收集要删除的RID
+    vector<RID> ridsToDelete;
+    RM_Record record;
+    
+    while ((rc = fileScan.GetNextRec(record)) == OK) {
+        char *recordData;
+        if ((rc = record.GetData(recordData))) {
+            continue;
+        }
+        
+        // 评估条件
+        bool shouldDelete = true;
+        
+        if (nConditions > 0) {
+            shouldDelete = false;
+            
+            // 检查所有条件（AND逻辑）
+            bool allConditionsMet = true;
+            for (int i = 0; i < nConditions; i++) {
+                bool conditionMet = false;
+                
+                // 获取左操作数的值
+                void *lhsValue = nullptr;
+                AttrType lhsType;
+                
+                // 在attrs中查找属性
+                int attrIndex = -1;
+                for (int j = 0; j < nAttrs; j++) {
+                    if (strcmp(attrs[j].attrName, conditions[i].lhsAttr.attrName) == 0) {
+                        attrIndex = j;
+                        break;
+                    }
+                }
+                
+                if (attrIndex == -1) {
+                    allConditionsMet = false;
+                    break;
+                }
+                
+                lhsValue = (void*)(recordData + attrs[attrIndex].offset);
+                lhsType = attrs[attrIndex].attrType;
+                
+                // 获取右操作数的值
+                void *rhsValue = nullptr;
+                AttrType rhsType;
+                
+                if (conditions[i].bRhsIsAttr) {
+                    // 右边是属性
+                    int rhsAttrIndex = -1;
+                    for (int j = 0; j < nAttrs; j++) {
+                        if (strcmp(attrs[j].attrName, conditions[i].rhsAttr.attrName) == 0) {
+                            rhsAttrIndex = j;
+                            break;
+                        }
+                    }
+                    
+                    if (rhsAttrIndex == -1) {
+                        allConditionsMet = false;
+                        break;
+                    }
+                    
+                    rhsValue = (void*)(recordData + attrs[rhsAttrIndex].offset);
+                    rhsType = attrs[rhsAttrIndex].attrType;
+                } else {
+                    // 右边是值
+                    rhsValue = conditions[i].rhsValue.data;
+                    rhsType = conditions[i].rhsValue.type;
+                }
+                
+                // 比较值
+                if (CompareAttrs(lhsValue, lhsType, rhsValue, rhsType, conditions[i].op, conditionMet) != OK) {
+                    allConditionsMet = false;
+                    break;
+                }
+                
+                if (!conditionMet) {
+                    allConditionsMet = false;
+                    break;
+                }
+            }
+            
+            shouldDelete = allConditionsMet;
+        }
+        
+        if (shouldDelete) {
+            RID rid;
+            record.GetRid(rid);
+            ridsToDelete.push_back(rid);
+        }
+    }
+    
+    // 关闭扫描
+    fileScan.CloseScan();
+    
+    // 删除记录
+    int deletedCount = 0;
+    for (const RID &rid : ridsToDelete) {
+        // 删除索引条目
+        for (int i = 0; i < nAttrs; i++) {
+            if (attrs[i].indexNo != -1) {
+                IX_IndexHandle indexHandle;
+                if (ixManager->OpenIndex(relName, attrs[i].indexNo, indexHandle) == OK) {
+                    // 需要先获取记录数据以获取key值
+                    RM_Record rec;
+                    if (fileHandle.GetRec(rid, rec) == OK) {
+                        char *data;
+                        rec.GetData(data);
+                        void *keyValue = data + attrs[i].offset;
+                        indexHandle.DeleteEntry(keyValue, rid);
+                    }
+                    ixManager->CloseIndex(indexHandle);
+                }
+            }
+        }
+        
+        // 删除记录
+        if ((rc = fileHandle.DeleteRec(rid)) == OK) {
+            deletedCount++;
+        }
+    }
+    
+    // 关闭文件
+    rmManager->CloseFile(fileHandle);
+    
+    delete[] attrs;
+    
+    cout << deletedCount << " tuple(s) deleted." << endl;
+    
+    return OK;
+}
+
+//
+// Update实现
+//
+
+//
+// Update实现 - 简化版本
+//
+RC QL_Manager::Update(const char *relName, 
+                     const RelAttr &updAttr,
+                     const int bIsValue,
+                     const RelAttr &rhsRelAttr,
+                     const Value &rhsValue,
+                     int nConditions,
+                     const Condition conditions[]) {
+    RC rc;
+    
+    // 检查系统目录
+    if (strcmp(relName, "relcat") == 0 || strcmp(relName, "attrcat") == 0) {
+        return QL_SYSTEMCATALOG;
+    }
+    
+    // 获取关系信息
+    DataAttrInfo *attrs;
+    int nAttrs;
+    if ((rc = GetRelationInfo(relName, attrs, nAttrs))) {
+        return rc;
+    }
+    
+    // 查找更新属性
+    int updateAttrIndex = -1;
+    for (int i = 0; i < nAttrs; i++) {
+        if (strcmp(attrs[i].attrName, updAttr.attrName) == 0) {
+            updateAttrIndex = i;
+            break;
+        }
+    }
+    
+    if (updateAttrIndex == -1) {
+        delete[] attrs;
+        return QL_INVALIDATTR;
+    }
+    
+    // 打开文件
+    RM_FileHandle fileHandle;
+    if ((rc = rmManager->OpenFile(relName, fileHandle))) {
+        delete[] attrs;
+        return rc;
+    }
+    
+    // 扫描并更新
+    RM_FileScan fileScan;
+    if ((rc = fileScan.OpenScan(fileHandle, INT, 4, 0, NO_OP, nullptr))) {
+        rmManager->CloseFile(fileHandle);
+        delete[] attrs;
+        return rc;
+    }
+    
+    int updatedCount = 0;
+    RM_Record record;
+    
+    while ((rc = fileScan.GetNextRec(record)) == OK) {
+        char *recordData;
+        record.GetData(recordData);
+        
+        // 评估条件
+        bool shouldUpdate = (nConditions == 0);
+        
+        if (nConditions > 0) {
+            shouldUpdate = true;
+            for (int i = 0; i < nConditions; i++) {
+                bool condMet = false;
+                
+                // 查找左属性
+                int lhsIdx = -1;
+                for (int j = 0; j < nAttrs; j++) {
+                    if (strcmp(attrs[j].attrName, conditions[i].lhsAttr.attrName) == 0) {
+                        lhsIdx = j;
+                        break;
+                    }
+                }
+                
+                if (lhsIdx == -1) {
+                    shouldUpdate = false;
+                    break;
+                }
+                
+                void *lhsVal = recordData + attrs[lhsIdx].offset;
+                void *rhsVal = conditions[i].bRhsIsAttr ? nullptr : conditions[i].rhsValue.data;
+                
+                if (CompareAttrs(lhsVal, attrs[lhsIdx].attrType, 
+                                rhsVal, conditions[i].rhsValue.type,
+                                conditions[i].op, condMet) != OK || !condMet) {
+                    shouldUpdate = false;
+                    break;
+                }
+            }
+        }
+        
+        if (shouldUpdate) {
+            // 更新值
+            memcpy(recordData + attrs[updateAttrIndex].offset, 
+                   rhsValue.data, 
+                   attrs[updateAttrIndex].attrLength);
+            
+            // 更新记录
+            if ((rc = fileHandle.UpdateRec(record)) == OK) {
+                updatedCount++;
+            }
+        }
+    }
+    
+    fileScan.CloseScan();
+    rmManager->CloseFile(fileHandle);
+    delete[] attrs;
+    
+    cout << updatedCount << " tuple(s) updated." << endl;
+    
+    return OK;
+}
