@@ -38,6 +38,10 @@ SQLParser *pSqlParser = nullptr;
 // 当前数据库名
 string currentDatabase = "";
 
+// 外部声明的全局标志
+extern int bQueryPlans;
+extern int bPrintParseTree;
+
 //保存应用启动时的工作目录
 string initialWorkingDir = "";
 
@@ -61,6 +65,7 @@ void ExecuteShowTables();
 void ExecuteDescTable(const ParsedSQL &parsed);
 void ExecuteCreateIndex(const ParsedSQL &parsed);
 void ExecuteDropIndex(const ParsedSQL &parsed);
+void ExecuteSet(const ParsedSQL &parsed);
 
 int main(int argc, char *argv[]) {
     try {
@@ -172,18 +177,46 @@ void PrintHelp() {
     cout << endl;
     cout << "Index Operations:" << endl;
     cout << "  CREATE INDEX <index_name> ON <table>(<column>)" << endl;
-    cout << "  DROP INDEX <index_name>           - Drop an index" << endl;
+    cout << "  DROP INDEX <table>(<column>)                - Drop an index" << endl;
     cout << endl;
     cout << "System Commands:" << endl;
+    cout << "  SET <option> = <value>            - Set system options" << endl;
     cout << "  HELP or ?                         - Show this help" << endl;
+    cout << "  Options: PRINT_PARSE_TREE=ON/OFF - Show syntax tree" << endl;
+    cout << "           QUERY_PLANS=ON/OFF      - Show query plans" << endl;
     cout << "  QUIT or EXIT                      - Exit RedBase" << endl;
     cout << endl;
+    cout << endl;
+    cout << "Data Types:" << endl;
+    cout << "  INT                               - 32-bit integer" << endl;
+    cout << "  FLOAT                             - 32-bit floating point" << endl;
+    cout << "  STRING                            - Variable length string (max 255)" << endl;
+    cout << endl;
+    cout << "Comparison Operators:" << endl;
+    cout << "  =, <, >, <=, >=, <>               - Equality and comparison" << endl;
+    cout << endl;
+    cout << "Examples:" << endl;
+    cout << "  CREATE TABLE users (id INT, name STRING, age INT);" << endl;
+    cout << "  INSERT INTO users VALUES (1, 'Alice', 25);" << endl;
+    cout << "  SELECT * FROM users WHERE age > 20;" << endl;
+    cout << "  UPDATE users SET age = 26 WHERE id = 1;" << endl;
+    cout << "  DELETE FROM users WHERE age < 18;" << endl;
+    cout << "  CREATE INDEX idx_age ON users(age);" << endl;
+    cout << "  DROP INDEX users(age);" << endl;
 }
 
 // 关键！完全统一的命令处理函数
 void ProcessCommand(const string &command) {
     // 统一解析 - 消除了所有重复的tokenize和类型判断逻辑
     ParsedSQL parsed = pSqlParser->ParseCommand(command);
+    
+    // 如果启用了语法分析树输出，打印语法树
+    if (bPrintParseTree && parsed.type != SQL_UNKNOWN && 
+        parsed.type != SQL_HELP && parsed.type != SQL_QUIT) {
+        cout << "\n=== Syntax Parse Tree ===" << endl;
+        pSqlParser->PrintParseTree(parsed);
+        cout << "=========================\n" << endl;
+    }
     
     // 单一switch处理所有命令类型
     switch (parsed.type) {
@@ -225,6 +258,9 @@ void ProcessCommand(const string &command) {
             break;
         case SQL_HELP:
             PrintHelp();
+            break;
+        case SQL_SET:
+            ExecuteSet(parsed);
             break;
         case SQL_QUIT:
             cout << "Goodbye!" << endl;
@@ -768,6 +804,7 @@ void ExecuteCreateIndex(const ParsedSQL &parsed) {
 }
 
 void ExecuteDropIndex(const ParsedSQL &parsed) {
+void ExecuteSet(const ParsedSQL &parsed);
     if (currentDatabase.empty()) {
         cout << "No database selected. Use 'USE <database_name>' first." << endl;
         return;
@@ -783,5 +820,37 @@ void ExecuteDropIndex(const ParsedSQL &parsed) {
         }
     } catch (const exception &e) {
         cout << "Error dropping index: " << e.what() << endl;
+    }
+}
+// SET命令执行
+void ExecuteSet(const ParsedSQL &parsed) {
+    string option = parsed.updateColumn;  // 借用的字段
+    string value = parsed.updateValueStr; // 借用的字段
+    
+    if (option == "PRINT_PARSE_TREE" || option == "PARSE_TREE") {
+        if (value == "ON" || value == "1" || value == "TRUE") {
+            bPrintParseTree = 1;
+            cout << "✓ Parse tree printing enabled." << endl;
+        } else if (value == "OFF" || value == "0" || value == "FALSE") {
+            bPrintParseTree = 0;
+            cout << "✓ Parse tree printing disabled." << endl;
+        } else {
+            cout << "Invalid value. Use ON/OFF, 1/0, or TRUE/FALSE." << endl;
+        }
+    } else if (option == "QUERY_PLANS" || option == "QUERY_PLAN") {
+        if (value == "ON" || value == "1" || value == "TRUE") {
+            bQueryPlans = 1;
+            cout << "✓ Query plan printing enabled." << endl;
+        } else if (value == "OFF" || value == "0" || value == "FALSE") {
+            bQueryPlans = 0;
+            cout << "✓ Query plan printing disabled." << endl;
+        } else {
+            cout << "Invalid value. Use ON/OFF, 1/0, or TRUE/FALSE." << endl;
+        }
+    } else {
+        cout << "Unknown option: " << option << endl;
+        cout << "Available options:" << endl;
+        cout << "  PRINT_PARSE_TREE (or PARSE_TREE) - Show syntax parse tree" << endl;
+        cout << "  QUERY_PLANS (or QUERY_PLAN) - Show query execution plans" << endl;
     }
 }

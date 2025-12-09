@@ -480,11 +480,3 @@ void SQLParser::RemoveParentheses(vector<string> &tokens) {
         token.erase(remove(token.begin(), token.end(), ')'), token.end());
     }
 }
-void SQLParser::PrintParseTree(const ParsedSQL &parsed, int indent) {
-    // Stub implementation - just print basic info
-    string indentStr(indent * 2, ' ');
-    cout << indentStr << "ParsedSQL Type: " << parsed.type << endl;
-    if (!parsed.tableName.empty()) {
-        cout << indentStr << "  Table: " << parsed.tableName << endl;
-    }
-}

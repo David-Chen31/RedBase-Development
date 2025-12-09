@@ -1,0 +1,471 @@
+//
+// sql_parser_unified.cc - 统一的SQL和系统命令解析器实现
+//
+
+#include "sql_parser.h"
+#include "ql.h"
+#include <iostream>
+#include <sstream>
+#include <algorithm>
+#include <cctype>
+#include <cstring>
+
+using namespace std;
+
+SQLParser::SQLParser() {
+    // 构造函数
+}
+
+SQLParser::~SQLParser() {
+    // 析构函数
+}
+
+// 统一的命令解析接口
+ParsedSQL SQLParser::ParseCommand(const string &command) {
+    vector<string> tokens = Tokenize(command);
+    
+    if (tokens.empty()) {
+        return ParsedSQL(); // 返回UNKNOWN类型
+    }
+    
+    SQLType type = GetCommandType(tokens);
+    
+    switch (type) {
+        // SQL语句
+        case SQL_CREATE_TABLE:
+            return ParseCreateTable(tokens);
+        case SQL_INSERT:
+            return ParseInsert(tokens);
+        case SQL_SELECT:
+            return ParseSelect(tokens);
+        case SQL_DELETE:
+            return ParseDelete(tokens);
+        case SQL_UPDATE:
+            return ParseUpdate(tokens);
+        case SQL_CREATE_INDEX:
+            return ParseCreateIndex(tokens);
+        case SQL_DROP_TABLE:
+            return ParseDropTable(tokens);
+        case SQL_DROP_INDEX:
+            return ParseDropIndex(tokens);
+        // 系统命令
+        case SQL_USE_DATABASE:
+            return ParseUseDatabase(tokens);
+        case SQL_CREATE_DATABASE:
+            return ParseCreateDatabase(tokens);
+        case SQL_SHOW_TABLES:
+            return ParseShowTables(tokens);
+        case SQL_DESC_TABLE:
+            return ParseDescTable(tokens);
+        // 特殊命令
+        case SQL_HELP:
+            return ParseHelp(tokens);
+        case SQL_QUIT:
+            return ParseQuit(tokens);
+        default:
+            return ParsedSQL(); // UNKNOWN
+    }
+}
+
+// 统一的分词器
+vector<string> SQLParser::Tokenize(const string &command) {
+    vector<string> tokens;
+    stringstream ss(command);
+    string token;
+    
+    while (ss >> token) {
+        // 移除分号
+        if (!token.empty() && token.back() == ';') {
+            token.pop_back();
+        }
+        
+        if (!token.empty()) {
+            tokens.push_back(token);
+        }
+    }
+    
+    return tokens;
+}
+
+// 统一的命令类型识别
+SQLType SQLParser::GetCommandType(const vector<string> &tokens) {
+    if (tokens.empty()) return SQL_UNKNOWN;
+    
+    string cmd = ToUpper(tokens[0]);
+    
+    // 特殊命令处理
+    if (cmd == "HELP" || cmd == "?") {
+        return SQL_HELP;
+    }
+    if (cmd == "QUIT" || cmd == "EXIT") {
+        return SQL_QUIT;
+    }
+    
+    // SQL和系统命令处理
+    if (cmd == "CREATE") {
+        if (tokens.size() >= 2) {
+            string subCmd = ToUpper(tokens[1]);
+            if (subCmd == "TABLE") return SQL_CREATE_TABLE;
+            if (subCmd == "INDEX") return SQL_CREATE_INDEX;
+            if (subCmd == "DATABASE") return SQL_CREATE_DATABASE;
+        }
+    } else if (cmd == "INSERT") {
+        return SQL_INSERT;
+    } else if (cmd == "SELECT") {
+        return SQL_SELECT;
+    } else if (cmd == "DELETE") {
+        return SQL_DELETE;
+    } else if (cmd == "UPDATE") {
+        return SQL_UPDATE;
+    } else if (cmd == "DROP") {
+        if (tokens.size() >= 2) {
+            string subCmd = ToUpper(tokens[1]);
+            if (subCmd == "TABLE") return SQL_DROP_TABLE;
+            if (subCmd == "INDEX") return SQL_DROP_INDEX;
+        }
+    } else if (cmd == "USE") {
+        return SQL_USE_DATABASE;
+    } else if (cmd == "SHOW") {
+        if (tokens.size() >= 2 && ToUpper(tokens[1]) == "TABLES") {
+            return SQL_SHOW_TABLES;
+        }
+    } else if (cmd == "DESC" || cmd == "DESCRIBE") {
+        return SQL_DESC_TABLE;
+    }
+    
+    return SQL_UNKNOWN;
+}
+
+// 系统命令解析实现
+ParsedSQL SQLParser::ParseUseDatabase(const vector<string> &tokens) {
+    ParsedSQL result;
+    result.type = SQL_USE_DATABASE;
+    
+    if (tokens.size() < 2) {
+        cout << "Invalid USE syntax" << endl;
+        return result;
+    }
+    
+    result.databaseName = tokens[1]; // 使用正确的数据库名字段
+    return result;
+}
+
+ParsedSQL SQLParser::ParseCreateDatabase(const vector<string> &tokens) {
+    ParsedSQL result;
+    result.type = SQL_CREATE_DATABASE;
+    
+    if (tokens.size() < 3) {
+        cout << "Invalid CREATE DATABASE syntax" << endl;
+        return result;
+    }
+    
+    result.databaseName = tokens[2]; // 使用正确的数据库名字段
+    return result;
+}
+
+ParsedSQL SQLParser::ParseShowTables(const vector<string> &tokens) {
+    ParsedSQL result;
+    result.type = SQL_SHOW_TABLES;
+    return result;
+}
+
+ParsedSQL SQLParser::ParseDescTable(const vector<string> &tokens) {
+    ParsedSQL result;
+    result.type = SQL_DESC_TABLE;
+    
+    if (tokens.size() < 2) {
+        cout << "Invalid DESC syntax" << endl;
+        return result;
+    }
+    
+    result.tableName = tokens[1];
+    return result;
+}
+
+ParsedSQL SQLParser::ParseHelp(const vector<string> &tokens) {
+    ParsedSQL result;
+    result.type = SQL_HELP;
+    return result;
+}
+
+ParsedSQL SQLParser::ParseQuit(const vector<string> &tokens) {
+    ParsedSQL result;
+    result.type = SQL_QUIT;
+    return result;
+}
+
+// DROP语句解析实现
+ParsedSQL SQLParser::ParseDropTable(const vector<string> &tokens) {
+    ParsedSQL result;
+    result.type = SQL_DROP_TABLE;
+    
+    if (tokens.size() < 3) {
+        cout << "Invalid DROP TABLE syntax" << endl;
+        return result;
+    }
+    
+    result.tableName = tokens[2];
+    return result;
+}
+
+ParsedSQL SQLParser::ParseDropIndex(const vector<string> &tokens) {
+    ParsedSQL result;
+    result.type = SQL_DROP_INDEX;
+    
+    if (tokens.size() < 3) {
+        cout << "Invalid DROP INDEX syntax" << endl;
+        return result;
+    }
+    
+    result.indexName = tokens[2];
+    return result;
+}
+
+// 其他SQL语句解析（从原来的代码复制过来）
+ParsedSQL SQLParser::ParseCreateTable(const vector<string> &tokens) {
+    ParsedSQL result;
+    result.type = SQL_CREATE_TABLE;
+    
+    if (tokens.size() < 4) {
+        cout << "Invalid CREATE TABLE syntax" << endl;
+        return result;
+    }
+    
+    result.tableName = tokens[2];
+    
+    // 示例解析（需要改进）
+    for (int i = 3; i < tokens.size(); i++) {
+        string token = tokens[i];
+        
+        // 移除括号和逗号
+        token.erase(remove(token.begin(), token.end(), '('), token.end());
+        token.erase(remove(token.begin(), token.end(), ')'), token.end());
+        token.erase(remove(token.begin(), token.end(), ','), token.end());
+        
+        if (token.empty()) continue;
+        
+        // 交替解析列名和类型
+        if ((i - 3) % 2 == 0) {
+            result.columnNames.push_back(token);
+        } else {
+            AttrType type = StringToAttrType(token);
+            result.columnTypes.push_back(type);
+            
+            if (type == STRING) {
+                result.columnLengths.push_back(255);
+            } else {
+                result.columnLengths.push_back(4);
+            }
+        }
+    }
+    
+    return result;
+}
+
+ParsedSQL SQLParser::ParseInsert(const vector<string> &tokens) {
+    ParsedSQL result;
+    result.type = SQL_INSERT;
+    
+    if (tokens.size() < 5 || ToUpper(tokens[1]) != "INTO" || ToUpper(tokens[3]) != "VALUES") {
+        cout << "Invalid INSERT syntax" << endl;
+        return result;
+    }
+    
+    result.tableName = tokens[2];
+    
+    for (int i = 4; i < tokens.size(); i++) {
+        string token = tokens[i];
+        
+        // 移除括号和逗号
+        token.erase(remove(token.begin(), token.end(), '('), token.end());
+        token.erase(remove(token.begin(), token.end(), ')'), token.end());
+        token.erase(remove(token.begin(), token.end(), ','), token.end());
+        
+        if (!token.empty()) {
+            // 自动推断类型
+            AttrType type = STRING;  // 默认STRING
+            
+            // 检查是否为字符串（带引号）
+            if ((token.front() == '\'' && token.back() == '\'') ||
+                (token.front() == '"' && token.back() == '"')) {
+                type = STRING;
+                // 移除引号
+                token = token.substr(1, token.length() - 2);
+            }
+            // 检查是否为浮点数（包含小数点）
+            else if (token.find('.') != string::npos) {
+                type = FLOAT;
+            }
+            // 检查是否为整数（全为数字，可能有负号）
+            else {
+                bool isInt = true;
+                size_t start = (token[0] == '-') ? 1 : 0;
+                for (size_t j = start; j < token.length(); j++) {
+                    if (!isdigit(token[j])) {
+                        isInt = false;
+                        break;
+                    }
+                }
+                if (isInt && token.length() > start) {
+                    type = INT;
+                } else {
+                    type = STRING;
+                }
+            }
+            
+            Value val = StringToValue(token, type);
+            result.values.push_back(val);
+        }
+    }
+    
+    return result;
+}
+
+ParsedSQL SQLParser::ParseSelect(const vector<string> &tokens) {
+    ParsedSQL result;
+    result.type = SQL_SELECT;
+    
+    if (tokens.size() < 4 || ToUpper(tokens[2]) != "FROM") {
+        cout << "Invalid SELECT syntax" << endl;
+        return result;
+    }
+    
+    result.tableName = tokens[3];
+    
+    // 解析WHERE条件（如果存在）
+    for (int i = 4; i < tokens.size(); i++) {
+        if (ToUpper(tokens[i]) == "WHERE" && i + 3 < tokens.size()) {
+            Condition cond;
+            
+            cond.lhsAttr.attrName = new char[strlen(tokens[i+1].c_str()) + 1];
+            strcpy(cond.lhsAttr.attrName, tokens[i+1].c_str());
+            cond.lhsAttr.relName = nullptr;
+            
+            cond.op = StringToCompOp(tokens[i+2]);
+            cond.bRhsIsAttr = 0;
+            cond.rhsValue = StringToValue(tokens[i+3], INT);
+            
+            result.conditions.push_back(cond);
+            break;
+        }
+    }
+    
+    return result;
+}
+
+ParsedSQL SQLParser::ParseDelete(const vector<string> &tokens) {
+    ParsedSQL result;
+    result.type = SQL_DELETE;
+    
+    if (tokens.size() < 3 || ToUpper(tokens[1]) != "FROM") {
+        cout << "Invalid DELETE syntax" << endl;
+        return result;
+    }
+    
+    result.tableName = tokens[2];
+    return result;
+}
+
+ParsedSQL SQLParser::ParseUpdate(const vector<string> &tokens) {
+    ParsedSQL result;
+    result.type = SQL_UPDATE;
+    
+    if (tokens.size() < 5 || ToUpper(tokens[2]) != "SET") {
+        cout << "Invalid UPDATE syntax" << endl;
+        return result;
+    }
+    
+    result.tableName = tokens[1];
+    return result;
+}
+
+ParsedSQL SQLParser::ParseCreateIndex(const vector<string> &tokens) {
+    ParsedSQL result;
+    result.type = SQL_CREATE_INDEX;
+    
+    if (tokens.size() < 6 || ToUpper(tokens[3]) != "ON") {
+        cout << "Invalid CREATE INDEX syntax" << endl;
+        return result;
+    }
+    
+    result.indexName = tokens[2];
+    result.tableName = tokens[4];
+    
+    string columnSpec = tokens[5];
+    columnSpec.erase(remove(columnSpec.begin(), columnSpec.end(), '('), columnSpec.end());
+    columnSpec.erase(remove(columnSpec.begin(), columnSpec.end(), ')'), columnSpec.end());
+    
+    result.columnNames.push_back(columnSpec);
+    return result;
+}
+
+// 工具函数实现（从原代码复制）
+AttrType SQLParser::StringToAttrType(const string &typeStr) {
+    string upperType = ToUpper(typeStr);
+    
+    if (upperType == "INT" || upperType == "INTEGER") {
+        return INT;
+    } else if (upperType == "FLOAT" || upperType == "REAL") {
+        return FLOAT;
+    } else if (upperType.find("CHAR") == 0 || upperType.find("VARCHAR") == 0) {
+        return STRING;
+    }
+    
+    return STRING;
+}
+
+Value SQLParser::StringToValue(const string &valueStr, AttrType type) {
+    Value value;
+    value.type = type;
+    
+    switch (type) {
+        case INT: {
+            int intVal = atoi(valueStr.c_str());
+            value.data = new int(intVal);
+            break;
+        }
+        case FLOAT: {
+            float floatVal = atof(valueStr.c_str());
+            value.data = new float(floatVal);
+            break;
+        }
+        case STRING: {
+            char *strVal = new char[valueStr.length() + 1];
+            strcpy(strVal, valueStr.c_str());
+            value.data = strVal;
+            break;
+        }
+    }
+    
+    return value;
+}
+
+CompOp SQLParser::StringToCompOp(const string &opStr) {
+    if (opStr == "=" || opStr == "==") return EQ_OP;
+    if (opStr == "<") return LT_OP;
+    if (opStr == ">") return GT_OP;
+    if (opStr == "<=") return LE_OP;
+    if (opStr == ">=") return GE_OP;
+    if (opStr == "!=" || opStr == "<>") return NE_OP;
+    
+    return NO_OP;
+}
+
+string SQLParser::ToUpper(const string &str) {
+    string result = str;
+    transform(result.begin(), result.end(), result.begin(), ::toupper);
+    return result;
+}
+
+void SQLParser::RemoveCommas(vector<string> &tokens) {
+    for (string &token : tokens) {
+        token.erase(remove(token.begin(), token.end(), ','), token.end());
+    }
+}
+
+void SQLParser::RemoveParentheses(vector<string> &tokens) {
+    for (string &token : tokens) {
+        token.erase(remove(token.begin(), token.end(), '('), token.end());
+        token.erase(remove(token.begin(), token.end(), ')'), token.end());
+    }
+}

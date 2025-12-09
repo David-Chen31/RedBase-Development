@@ -10,6 +10,7 @@ using namespace std;
 
 // 全局变量（在parser.h中声明）
 int bQueryPlans = 0;
+int bPrintParseTree = 0;  // 是否打印语法分析树
 
 //
 // RelAttr实现

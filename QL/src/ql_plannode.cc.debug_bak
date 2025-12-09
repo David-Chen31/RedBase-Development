@@ -204,22 +204,6 @@ RC SelectNode::EvaluateCondition(const char *data, const Condition &cond, bool &
         rhsValue = cond.rhsValue.data;
         rhsType = cond.rhsValue.type;
     }
-        
-        // 修复：如果右值类型与左值类型不匹配，尝试根据左值类型调整
-        // 这通常发生在SQL解析时无法确定常量类型的情况
-        if (rhsType != lhsType && rhsValue != nullptr) {
-            // 如果左边是FLOAT，右边被误判为INT，则将其视为FLOAT
-            if (lhsType == FLOAT && rhsType == INT) {
-                // 将INT值转换为FLOAT（假设它实际上已经是float数据）
-                rhsType = FLOAT;
-            }
-            // 如果左边是INT，右边被误判为FLOAT，则将其视为INT
-            else if (lhsType == INT && rhsType == FLOAT) {
-                rhsType = INT;
-            }
-            // STRING类型保持不变
-            // 如果类型仍然不匹配，让CompareValues处理错误
-        }
     
     // 比较值
     return CompareValues(lhsValue, lhsType, rhsValue, rhsType, cond.op, result);

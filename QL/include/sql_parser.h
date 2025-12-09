@@ -32,6 +32,7 @@ enum SQLType {
     // 特殊命令
     SQL_HELP,
     SQL_QUIT,
+    SQL_SET,
     SQL_UNKNOWN
 };
 
@@ -63,6 +64,9 @@ public:
     // 统一解析接口 - 处理所有命令（SQL + 系统命令）
     ParsedSQL ParseCommand(const std::string &command);
     
+    // 打印语法分析树
+    void PrintParseTree(const ParsedSQL &parsed, int indent = 0);
+    
 private:
     // 辅助函数
     std::vector<std::string> Tokenize(const std::string &command);
@@ -73,6 +77,7 @@ private:
     ParsedSQL ParseDropTable(const std::vector<std::string> &tokens);
     ParsedSQL ParseInsert(const std::vector<std::string> &tokens);
     ParsedSQL ParseSelect(const std::vector<std::string> &tokens);
+    ParsedSQL ParseSet(const std::vector<std::string> &tokens);
     ParsedSQL ParseDelete(const std::vector<std::string> &tokens);
     ParsedSQL ParseUpdate(const std::vector<std::string> &tokens);
     ParsedSQL ParseCreateIndex(const std::vector<std::string> &tokens);

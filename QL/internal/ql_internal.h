@@ -7,6 +7,7 @@
 
 // 查询计划打印控制（在parser.h中定义）
 extern int bQueryPlans;
+extern int bPrintParseTree;  // 是否打印语法分析树
 
 // 内部常量
 #define MAX_QUERY_ATTRS    100    // 查询中最大属性数
