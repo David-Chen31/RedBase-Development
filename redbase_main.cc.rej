@@ -1,0 +1,14 @@
+--- redbase_main.cc
++++ redbase_main.cc
+@@ -753,6 +753,11 @@ void ExecuteCreateIndex(const ParsedSQL &parsed) {
+             cout << "No column specified for index." << endl;
+             return;
+         }
+         
++        // 调试输出
++        cout << "DEBUG: tableName = '" << parsed.tableName << "'" << endl;
++        cout << "DEBUG: columnName = '" << parsed.columnNames[0] << "'" << endl;
++        cout << "DEBUG: columnName length = " << parsed.columnNames[0].length() << endl;
++        
+         RC rc = pSmManager->CreateIndex(parsed.tableName.c_str(),
+                                        parsed.columnNames[0].c_str());

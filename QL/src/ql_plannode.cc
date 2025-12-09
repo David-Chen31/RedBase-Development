@@ -309,15 +309,27 @@ void SelectNode::PrintCondition(const Condition &cond) {
 //
 ProjectNode::ProjectNode(unique_ptr<PlanNode> child, const vector<RelAttr> &attrs)
     : PlanNode(NODE_PROJECTION), childNode(std::move(child)), projectAttrs(attrs) {
-    // 设置输出属性
+    // 设置输出属性 - 从子节点的outputAttrs中查找并复制完整的属性信息
     outputAttrs.clear();
-    for (const auto &attr : attrs) {
-        // 这里需要将RelAttr转换为DataAttrInfo
-        // 临时实现
-        DataAttrInfo attrInfo;
-        strcpy(attrInfo.relName, attr.relName ? attr.relName : "");
-        strcpy(attrInfo.attrName, attr.attrName);
-        outputAttrs.push_back(attrInfo);
+    int currentOffset = 0;
+    if (childNode) {
+        for (const auto &attr : attrs) {
+            // 在子节点的输出属性中查找匹配的属性
+            for (const auto &childAttr : childNode->outputAttrs) {
+                bool nameMatches = (strcmp(childAttr.attrName, attr.attrName) == 0);
+                bool relMatches = (!attr.relName || strlen(attr.relName) == 0 || 
+                                  strcmp(childAttr.relName, attr.relName) == 0);
+                
+                if (nameMatches && relMatches) {
+                    // 找到匹配的属性，复制完整信息并更新offset
+                    DataAttrInfo newAttr = childAttr;
+                    newAttr.offset = currentOffset;
+                    outputAttrs.push_back(newAttr);
+                    currentOffset += childAttr.attrLength;
+                    break;
+                }
+            }
+        }
     }
 }
 
@@ -410,15 +422,28 @@ RC ProjectNode::ProjectTuple(const char *inputData, char *outputData) {
 
 RC ProjectNode::GetAttributeFromTuple(const char *tupleData, const RelAttr &attr,
                                      void *&value, AttrType &type, int &length) {
-    // 根据属性名从元组中提取值
-    // 这需要访问schema信息
+    // 在子节点的输出属性中查找匹配的属性
+    if (!childNode) {
+        return QL_NULLPOINTER;
+    }
     
-    // 临时实现
-    value = (void*)tupleData;
-    type = INT;
-    length = sizeof(int);
+    for (const auto &attrInfo : childNode->outputAttrs) {
+        // 匹配属性名（忽略表名，或者匹配表名）
+        bool nameMatches = (strcmp(attrInfo.attrName, attr.attrName) == 0);
+        bool relMatches = (!attr.relName || strlen(attr.relName) == 0 || 
+                          strcmp(attrInfo.relName, attr.relName) == 0);
+        
+        if (nameMatches && relMatches) {
+            // 找到了！从数据中提取值
+            value = (void*)(tupleData + attrInfo.offset);
+            type = attrInfo.attrType;
+            length = attrInfo.attrLength;
+            return OK;
+        }
+    }
     
-    return OK;
+    // 未找到属性
+    return QL_INVALIDATTR;
 }
 
 //

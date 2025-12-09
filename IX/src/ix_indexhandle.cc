@@ -48,6 +48,13 @@ RC IX_IndexHandle::InsertEntry(void *pData, const RID &rid) {
         return IX_NULLPOINTER;
     }
     
+    // 如果索引为空（没有根节点），创建第一个叶子节点作为根
+    if (indexHdr.rootPage == IX_NO_PAGE) {
+        if ((rc = CreateFirstLeafNode())) {
+            return rc;
+        }
+    }
+    
     // 从根节点开始插入
     bool wasSplit = false;
     void *newChildKey = NULL;
@@ -525,6 +532,48 @@ RC IX_IndexHandle::WriteHeader() {
 }
 
 //
+//
+// CreateFirstLeafNode: 创建第一个叶子节点（当索引为空时）
+//
+RC IX_IndexHandle::CreateFirstLeafNode() {
+    RC rc;
+    PF_PageHandle ph;
+    char *nodeData;
+    
+    // 分配新页面作为第一个叶子节点（也是根）
+    if ((rc = pfh->AllocatePage(ph))) {
+        return rc;
+    }
+    
+    PageNum newLeafPage;
+    if ((rc = ph.GetPageNum(newLeafPage))) {
+        pfh->UnpinPage(newLeafPage);
+        return rc;
+    }
+    
+    if ((rc = ph.GetData(nodeData))) {
+        pfh->UnpinPage(newLeafPage);
+        return rc;
+    }
+    
+    // 初始化叶子节点
+    IX_NodeHdr *nodeHdr = (IX_NodeHdr *)nodeData;
+    nodeHdr->isLeaf = TRUE;
+    nodeHdr->numKeys = 0;           // 空节点
+    nodeHdr->parent = IX_NO_PAGE;
+    nodeHdr->left = IX_NO_PAGE;     // 没有左兄弟
+    nodeHdr->right = IX_NO_PAGE;    // 没有右兄弟
+    
+    // 更新索引头中的根页面号
+    indexHdr.rootPage = newLeafPage;
+    indexHdr.numPages++;
+    
+    pfh->MarkDirty(newLeafPage);
+    pfh->UnpinPage(newLeafPage);
+    
+    return 0;
+}
+
 // CreateNewRoot: 创建新的根节点（当原根分裂时）
 //
 RC IX_IndexHandle::CreateNewRoot(void *pData, PageNum leftPage, PageNum rightPage) {

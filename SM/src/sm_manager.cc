@@ -331,8 +331,7 @@ RC SM_Manager::CreateIndex(const char *relName, const char *attrName) {
     }
     
     // 扫描关系，为现有记录建立索引
-    RM_FileScan fileScan;
-    if ((rc = fileScan.OpenScan(fileHandle, INT, sizeof(int), 0, NO_OP, NULL))) {
+    RM_FileScan fileScan;    if ((rc = fileScan.OpenScan(fileHandle, attr.attrType, attr.attrLength, attr.offset, NO_OP, NULL))) {
         rmManager->CloseFile(fileHandle);
         ixManager->CloseIndex(indexHandle);
         ixManager->DestroyIndex(relName, indexNo);

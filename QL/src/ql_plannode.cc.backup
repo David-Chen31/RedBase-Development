@@ -211,15 +211,28 @@ RC SelectNode::EvaluateCondition(const char *data, const Condition &cond, bool &
 
 RC SelectNode::GetAttributeValue(const char *data, const RelAttr &attr, 
                                 void *&value, AttrType &type) {
-    // 根据属性名称从元组数据中提取值
-    // 这需要schema信息来确定属性的偏移量和类型
     
-    // 临时实现
-    value = (void*)(data + 0); // 假设第一个属性从偏移0开始
-    type = INT; // 假设是整数类型
+    // 在 outputAttrs 中查找匹配的属性
+    for (const auto &attrInfo : outputAttrs) {
+        // 匹配属性名（忽略表名，或者匹配表名）
+        bool nameMatches = (strcmp(attrInfo.attrName, attr.attrName) == 0);
+        bool relMatches = (!attr.relName || strlen(attr.relName) == 0 || 
+                          strcmp(attrInfo.relName, attr.relName) == 0);
+        
+        
+        if (nameMatches && relMatches) {
+            // 找到了！从数据中提取值
+            value = (void*)(data + attrInfo.offset);
+            type = attrInfo.attrType;
+            return OK;
+        }
+    }
     
-    return OK;
+    // 未找到属性
+    return QL_INVALIDCONDITION;
 }
+
+
 
 RC SelectNode::CompareValues(const void *lhs, AttrType lhsType,
                             const void *rhs, AttrType rhsType,

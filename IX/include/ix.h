@@ -78,6 +78,7 @@ private:
     RC DeleteFromLeaf(char *nodeData, void *pData, const RID &rid);
     RC FindChildPage(char *nodeData, void *pData, PageNum &childPage);
     RC CreateNewRoot(void *pData, PageNum leftPage, PageNum rightPage);
+    RC CreateFirstLeafNode();                          // 创建第一个叶子节点（空索引时）
     RC WriteHeader();
     int CompareKeys(void *key1, void *key2);
     
